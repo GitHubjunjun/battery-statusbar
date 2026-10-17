@@ -1,3 +1,9 @@
+<div align="right">
+
+**简体中文** | [English](README.en.md)
+
+</div>
+
 # Battery Statusbar · 桌面电量状态条
 
 Windows 桌面悬浮电量条，毛玻璃圆角 + 低饱和配色，C# / WinForms（.NET 8）单进程实现，目标：**特别轻量**——框架依赖单文件约 180KB，空闲时 CPU 占用近乎为 0，内存经 `EmptyWorkingSet` 定期裁剪。
