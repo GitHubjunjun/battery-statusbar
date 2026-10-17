@@ -8,7 +8,7 @@
 
 A floating battery status bar for the Windows desktop. Frosted-glass rounded corners with a low-saturation palette, implemented as a single-process C# / WinForms (.NET 8) app — built to be **extremely lightweight**: a framework-dependent single file of ~180KB with near-zero idle CPU, and working set trimmed periodically via `EmptyWorkingSet`.
 
-![screenshot](docs/screenshot.png?v=2)
+![screenshot](docs/screenshot.png?v=3)
 
 ## Features
 
