@@ -1410,7 +1410,16 @@ namespace StatusBarCs
                         if (!alive)
                         {
                             Log.W("watchdog: main instance gone, relaunching");
-                            try { System.Diagnostics.Process.Start(exe); } catch { }
+                            try
+                            {
+                                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                                {
+                                    FileName = exe,
+                                    UseShellExecute = true,
+                                    WindowStyle = System.Diagnostics.ProcessWindowStyle.Normal,
+                                });
+                            }
+                            catch { }
                         }
                     }
                 }
@@ -1453,8 +1462,15 @@ namespace StatusBarCs
             {
                 string exe = Environment.ProcessPath;
                 if (string.IsNullOrEmpty(exe)) exe = Path.Combine(AppContext.BaseDirectory, "StatusBar.exe");
-                System.Diagnostics.Process.Start(exe, "--watchdog");
-                Log.W("watchdog spawned");
+                // UseShellExecute：由系统 shell 拉起，脱离调用方进程组/Job，避免被连带回收
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = exe,
+                    Arguments = "--watchdog",
+                    UseShellExecute = true,
+                    WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden,
+                });
+                Log.W("watchdog spawned (shell)");
             }
             catch { }
         }
