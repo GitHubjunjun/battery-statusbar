@@ -1382,6 +1382,7 @@ namespace StatusBarCs
             Redraw();
             ToBottom(); // 常态压在桌面层之上、其他窗口之下
             guard.Start();
+            Task.Run(() => { Thread.Sleep(2000); Program.SpawnWatchdog(); });
         }
     }
 
@@ -1390,8 +1391,31 @@ namespace StatusBarCs
         static Mutex singleInstance;
 
         [STAThread]
-        static void Main()
+        static void Main(string[] args)
         {
+            // 看门狗模式：每 30s 检查主实例，被外部终止则自动拉活
+            if (args != null && args.Length > 0 && args[0] == "--watchdog")
+            {
+                bool wCreated;
+                using (var wMutex = new Mutex(true, @"Local\StatusBarCs.Watchdog", out wCreated))
+                {
+                    if (!wCreated) return; // 已有看门狗
+                    string exe = Environment.ProcessPath;
+                    if (string.IsNullOrEmpty(exe)) exe = Path.Combine(AppContext.BaseDirectory, "StatusBar.exe");
+                    while (true)
+                    {
+                        Thread.Sleep(30000);
+                        bool alive = false;
+                        try { using (Mutex.OpenExisting(@"Local\StatusBarCs.SingleInstance")) alive = true; } catch { }
+                        if (!alive)
+                        {
+                            Log.W("watchdog: main instance gone, relaunching");
+                            try { System.Diagnostics.Process.Start(exe); } catch { }
+                        }
+                    }
+                }
+            }
+
             // 单实例锁：开机自启 + 系统重启应用恢复叠加时，第二个实例静默退出
             bool createdNew;
             singleInstance = new Mutex(true, @"Local\StatusBarCs.SingleInstance", out createdNew);
@@ -1410,7 +1434,29 @@ namespace StatusBarCs
             try { SetProcessDpiAwareness(2); } catch { try { Nat.SetProcessDPIAware(); } catch { } }
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
+
+            // 退出/异常全量捕获：区分崩溃、正常退出与外部终止
+            AppDomain.CurrentDomain.UnhandledException += (s, e) =>
+                Log.W("UNHANDLED-EX: " + e.ExceptionObject + " terminating=" + e.IsTerminating);
+            Application.ThreadException += (s, e) =>
+                Log.W("UI-EX: " + e.Exception);
+            Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+            AppDomain.CurrentDomain.ProcessExit += (s, e) =>
+                Log.W("=== ProcessExit (graceful) ===");
+
             Application.Run(new BarForm());
+        }
+
+        internal static void SpawnWatchdog()
+        {
+            try
+            {
+                string exe = Environment.ProcessPath;
+                if (string.IsNullOrEmpty(exe)) exe = Path.Combine(AppContext.BaseDirectory, "StatusBar.exe");
+                System.Diagnostics.Process.Start(exe, "--watchdog");
+                Log.W("watchdog spawned");
+            }
+            catch { }
         }
 
         [DllImport("shcore.dll")]
