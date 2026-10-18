@@ -1001,6 +1001,13 @@ namespace StatusBarCs
                 {
                     k.SetValue("StatusBar", "\"" + exe + "\"");
                 }
+                // 清理旧版（Python）遗留的自启脚本，防止开机双开
+                string legacy = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.Startup), "状态条.cmd");
+                if (File.Exists(legacy))
+                {
+                    try { File.Delete(legacy); } catch { }
+                }
                 tray.ShowBalloonTip(1500, "状态条", "已设置开机自启", ToolTipIcon.Info);
             }
             catch { }
@@ -1017,9 +1024,16 @@ namespace StatusBarCs
 
     static class Program
     {
+        static Mutex singleInstance;
+
         [STAThread]
         static void Main()
         {
+            // 单实例锁：开机自启 + 系统重启应用恢复叠加时，第二个实例静默退出
+            bool createdNew;
+            singleInstance = new Mutex(true, @"Local\StatusBarCs.SingleInstance", out createdNew);
+            if (!createdNew) return;
+
             try { SetProcessDpiAwareness(2); } catch { try { Nat.SetProcessDPIAware(); } catch { } }
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
