@@ -43,6 +43,8 @@ A floating battery status bar for the Windows desktop. Frosted-glass rounded cor
 | 60% ~ 90% | 3 min |
 | <60% | 1 min |
 
+> **Why this design**: the lower your laptop battery gets, the more closely you want to watch it — so the interval shrinks. Polling frequently at full charge is pointless. These thresholds are just my personal habit — edit `NextIntervalMs()` in `Program.cs` to fit your own needs (or just ask your AI to do it).
+
 ## Build & Run
 
 ### Requirements
