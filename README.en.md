@@ -6,7 +6,7 @@
 
 # Battery Statusbar · Desktop Battery Bar
 
-A floating battery status bar for the Windows desktop. Frosted-glass rounded corners with a low-saturation palette, implemented as a single-process C# / WinForms (.NET 8) app — built to be **extremely lightweight**: a framework-dependent single file of ~180KB with near-zero idle CPU, and working set trimmed periodically via `EmptyWorkingSet`.
+A floating battery status bar for the Windows desktop. Frosted-glass rounded corners with a low-saturation palette, implemented as a single-process C# / WinForms (.NET 8) app — built to be **extremely lightweight**: a 24MB installer (mostly the WinRT projection layer; the actual footprint is tiny) with near-zero idle CPU, and working set trimmed periodically via `EmptyWorkingSet`.
 
 ![screenshot](docs/screenshot.png?v=3)
 
@@ -131,7 +131,7 @@ A: Three checks — ① make sure it's connected (disconnected devices are hidde
 A: No. Standard Windows interfaces (HFP/GATT) only provide a single aggregated level. Case/bud levels use vendor-proprietary protocols (Huawei PC Manager uses a private channel) — out of scope unless the vendor protocol is reverse-engineered.
 
 **Q: How much resources does it use?**
-A: Framework-dependent single file ~180KB; idle CPU ≈ 0 (shortest refresh interval is 1 minute, working set trimmed after every scan); memory stays in the few-MB range after `EmptyWorkingSet`.
+A: Installer is 24.4MB (mostly the WinRT projection `Microsoft.Windows.SDK.NET.dll`); idle CPU ≈ 0 (shortest refresh interval is 1 minute, working set trimmed after every scan); memory stays in the few-MB range after `EmptyWorkingSet`.
 
 **Q: Does it conflict with Wallpaper Engine or similar?**
 A: No. The background is sampled from the rendered desktop (Progman surface); after changing wallpapers it follows automatically within 60 seconds.
