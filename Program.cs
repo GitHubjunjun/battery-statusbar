@@ -327,6 +327,12 @@ namespace StatusBarCs
             }
         }
 
+        protected override void OnFormClosing(FormClosingEventArgs e)
+        {
+            Log.W("=== exit (reason: " + e.CloseReason + ") ===");
+            base.OnFormClosing(e);
+        }
+
         protected override void OnPaintBackground(PaintEventArgs e) { }
         protected override void OnPaint(PaintEventArgs e) { }
 
@@ -479,12 +485,14 @@ namespace StatusBarCs
                 g.DrawImage(src, new Rectangle(0, 0, w, h));
             }
             var blurred = BoxBlur(small, Math.Max(1, radius / 4));
+            small.Dispose();
             var outp = new Bitmap(src.Width, src.Height, PixelFormat.Format32bppArgb);
             using (var g = Graphics.FromImage(outp))
             {
                 g.InterpolationMode = InterpolationMode.HighQualityBilinear;
                 g.DrawImage(blurred, new Rectangle(0, 0, src.Width, src.Height));
             }
+            blurred.Dispose();
             return outp;
         }
 
@@ -952,6 +960,11 @@ namespace StatusBarCs
             var menu = new ContextMenuStrip();
             menu.Items.Add("显示 / 隐藏", null, (s, e) => ToggleHide());
             menu.Items.Add("刷新", null, (s, e) => RefreshData());
+            menu.Items.Add("打开日志", null, (s, e) =>
+            {
+                try { System.Diagnostics.Process.Start("notepad.exe", Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "debug.log")); }
+                catch { }
+            });
             miAutoHide = new ToolStripMenuItem("有窗口时自动隐藏", null, (s, e) =>
             {
                 autoHide = !autoHide;
