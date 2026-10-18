@@ -62,9 +62,24 @@ namespace StatusBarCs
         public static extern bool ShowWindow(IntPtr h, int cmd);
         [DllImport("user32.dll")]
         public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
+        [DllImport("user32.dll")]
+        public static extern bool SetForegroundWindow(IntPtr h);
+        [DllImport("user32.dll")]
+        public static extern bool ReleaseCapture();
+        [DllImport("user32.dll")]
+        public static extern IntPtr SendMessage(IntPtr h, uint msg, IntPtr wp, IntPtr lp);
         public static readonly IntPtr HWND_BOTTOM = new IntPtr(1);
         public static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
         public const uint SWP_NOMOVE = 0x2, SWP_NOSIZE = 0x1, SWP_NOACTIVATE = 0x10;
+        public const uint WM_WINDOWPOSCHANGING = 0x0046, WM_ACTIVATE = 0x0006;
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct WINDOWPOS
+        {
+            public IntPtr hwnd, hwndInsertAfter;
+            public int x, y, cx, cy;
+            public uint flags;
+        }
 
         [DllImport("psapi.dll")]
         public static extern bool EmptyWorkingSet(IntPtr h);
@@ -204,11 +219,33 @@ namespace StatusBarCs
         public int? Pct;
     }
 
+    class DarkMenuColors : ProfessionalColorTable
+    {
+        public override Color ToolStripDropDownBackground => Color.FromArgb(24, 27, 34);
+        public override Color ImageMarginGradientBegin => Color.FromArgb(24, 27, 34);
+        public override Color ImageMarginGradientMiddle => Color.FromArgb(24, 27, 34);
+        public override Color ImageMarginGradientEnd => Color.FromArgb(24, 27, 34);
+        public override Color MenuBorder => Color.FromArgb(60, 70, 90);
+        public override Color MenuItemBorder => Color.FromArgb(70, 90, 120);
+        public override Color MenuItemSelected => Color.FromArgb(45, 55, 80);
+        public override Color MenuItemSelectedGradientBegin => Color.FromArgb(45, 55, 80);
+        public override Color MenuItemSelectedGradientEnd => Color.FromArgb(60, 75, 105);
+        public override Color MenuItemPressedGradientBegin => Color.FromArgb(35, 45, 65);
+        public override Color MenuItemPressedGradientEnd => Color.FromArgb(45, 55, 80);
+        public override Color SeparatorDark => Color.FromArgb(60, 70, 90);
+        public override Color SeparatorLight => Color.FromArgb(60, 70, 90);
+    }
+
     class Cfg
     {
         public float scale { get; set; } = 1f;
         public int x { get; set; } = -1;
         public int y { get; set; } = -1;
+        public string accent { get; set; } = "#80A0C0";
+        public string lowColor { get; set; } = "#D07072";
+        public int radius { get; set; } = 22;
+        public int bgOpacity { get; set; } = 100;
+        public int textOpacity { get; set; } = 100;
     }
 
     class LastCfg
@@ -229,12 +266,14 @@ namespace StatusBarCs
 
     class BarForm : Form
     {
-        const int BASE_W = 500, BASE_R = 22, BASE_M = 22;
-        static readonly Color COL_TEXT = Color.FromArgb(245, 242, 243, 246);
-        static readonly Color COL_SUB = Color.FromArgb(120, 240, 242, 246);
-        static readonly Color COL_TRACK = Color.FromArgb(44, 255, 255, 255);
-        static readonly Color COL_OK = Color.FromArgb(128, 160, 192);
-        static readonly Color COL_LOW = Color.FromArgb(208, 112, 114);
+        const int BASE_W = 500, BASE_M = 22;
+        Color colOK = Color.FromArgb(128, 160, 192);   // 进度条主色（设置可调）
+        Color colLow = Color.FromArgb(208, 112, 114);  // 低电量色（设置可调）
+        int radiusCfg = 22;   // 圆角（逻辑 px，设置可调）
+        int bgOpacityAcc = 100;   // 背景透明度 %（0=纯文字）
+        int textOpacityAcc = 100; // 文字透明度 %（0=纯毛玻璃）
+        Cfg cfg = new Cfg();
+        bool settingsOpen;
 
         float S = 1f;
         int W, H, R, M, CW, CH;
@@ -256,6 +295,7 @@ namespace StatusBarCs
         ToolStripMenuItem miAutoHide;
         System.Windows.Forms.Timer timer;
         System.Windows.Forms.Timer pinTimer;
+        EventWaitHandle settingsEvent;
         readonly string cfgPath, lastPath;
         LastCfg last = new LastCfg();
 
@@ -309,6 +349,20 @@ namespace StatusBarCs
             pinTimer = new System.Windows.Forms.Timer();
             pinTimer.Interval = 3000;
             pinTimer.Tick += (s2, e2) => { pinTimer.Stop(); ToBottom(); };
+
+            // 第二实例通知 → 打开设置
+            settingsEvent = new EventWaitHandle(false, EventResetMode.ManualReset, @"Local\StatusBarCs.ShowSettings");
+            var ipcTimer = new System.Windows.Forms.Timer();
+            ipcTimer.Interval = 200;
+            ipcTimer.Tick += (s2, e2) =>
+            {
+                if (settingsEvent.WaitOne(0))
+                {
+                    settingsEvent.Reset();
+                    ShowSettings();
+                }
+            };
+            ipcTimer.Start();
         }
 
         protected override CreateParams CreateParams
@@ -324,6 +378,28 @@ namespace StatusBarCs
         protected override void WndProc(ref Message m)
         {
             if (m.Msg == 0x0112 && ((int)m.WParam & 0xFFF0) == 0xF020) return; // 忽略 SC_MINIMIZE
+            // 抵抗 Win+D 最小化：系统要把窗口缩成图标时拒绝尺寸变化，保持原状
+            if (m.Msg == Nat.WM_WINDOWPOSCHANGING)
+            {
+                var wp = (Nat.WINDOWPOS)Marshal.PtrToStructure(m.LParam, typeof(Nat.WINDOWPOS));
+                if ((wp.flags & Nat.SWP_NOSIZE) == 0 && (wp.cx < 300 || wp.cy < 120))
+                {
+                    wp.cx = CW; wp.cy = CH;
+                    Marshal.StructureToPtr(wp, m.LParam, true);
+                    m.Result = IntPtr.Zero;
+                    return;
+                }
+            }
+            // 置顶状态下点击其他窗口（失焦）→ 立即回到底层
+            if (m.Msg == Nat.WM_ACTIVATE)
+            {
+                short st = (short)((long)m.WParam & 0xFFFF);
+                if (st == 0 && pinTimer != null && pinTimer.Enabled)
+                {
+                    pinTimer.Stop();
+                    ToBottom();
+                }
+            }
             base.WndProc(ref m);
         }
 
@@ -343,12 +419,205 @@ namespace StatusBarCs
                 Nat.SWP_NOMOVE | Nat.SWP_NOSIZE | Nat.SWP_NOACTIVATE);
         }
 
-        void PinTop() // 点击状态条：临时置顶 3s，方便查看/拖动，随后自动回到底层
+        void PinTop() // 点击状态条：置顶并激活自己；失焦或 3s 后自动回到底层
         {
             Nat.SetWindowPos(Handle, Nat.HWND_TOPMOST, 0, 0, 0, 0,
                 Nat.SWP_NOMOVE | Nat.SWP_NOSIZE | Nat.SWP_NOACTIVATE);
+            try { Nat.SetForegroundWindow(Handle); } catch { }
             pinTimer.Stop();
             pinTimer.Start();
+        }
+
+        // ---------- 设置面板 ----------
+        void ShowSettings()
+        {
+            if (settingsOpen) return;
+            settingsOpen = true;
+
+            Button curAccentBtn = null, curLowBtn = null;
+
+            void PaintSwatch(object s, PaintEventArgs e)
+            {
+                var b = (Button)s;
+                if (b == curAccentBtn || b == curLowBtn)
+                    using (var pen = new Pen(Color.White, 3))
+                        e.Graphics.DrawRectangle(pen, 2, 2, b.Width - 5, b.Height - 5);
+            }
+
+            Button MkSwatch(string hex)
+            {
+                var b = new Button
+                {
+                    Size = new Size(36, 36),
+                    FlatStyle = FlatStyle.Flat,
+                    BackColor = ColorTranslator.FromHtml(hex),
+                    Tag = hex,
+                    Cursor = Cursors.Hand,
+                    Margin = new Padding(2),
+                };
+                b.FlatAppearance.BorderSize = 1;
+                b.Paint += PaintSwatch;
+                return b;
+            }
+
+            var f = new Form
+            {
+                Text = "状态条设置",
+                FormBorderStyle = FormBorderStyle.None,
+                StartPosition = FormStartPosition.Manual,
+                ShowInTaskbar = false,
+                TopMost = true,
+                BackColor = Color.FromArgb(24, 27, 34),
+                Font = new Font("Microsoft YaHei UI", 9f),
+            };
+            f.Location = new Point(Math.Max(0, px - 520), Math.Max(0, py - 60));
+            f.FormClosed += (s, e) => settingsOpen = false;
+
+            var titleBar = new Panel { Location = new Point(0, 0), Size = new Size(500, 36), BackColor = Color.FromArgb(31, 36, 45) };
+            var title = new Label { Text = "状态条设置", Location = new Point(14, 8), AutoSize = true, ForeColor = Color.Gainsboro, Font = new Font("Microsoft YaHei UI", 9.5f, FontStyle.Bold) };
+            var close = new Label { Text = "✕", Location = new Point(440, 6), AutoSize = true, ForeColor = Color.Gainsboro, Font = new Font("Microsoft YaHei UI", 10f, FontStyle.Bold), Cursor = Cursors.Hand };
+            close.Click += (s, e) => f.Close();
+            close.MouseEnter += (s, e) => close.ForeColor = Color.White;
+            close.MouseLeave += (s, e) => close.ForeColor = Color.Gainsboro;
+            titleBar.Controls.Add(title);
+            titleBar.Controls.Add(close);
+            titleBar.MouseDown += (s, e) =>
+            {
+                if (e.Button == MouseButtons.Left)
+                {
+                    Nat.ReleaseCapture();
+                    Nat.SendMessage(f.Handle, 0xA1, (IntPtr)2, IntPtr.Zero);
+                }
+            };
+            f.Controls.Add(titleBar);
+
+            var root = new FlowLayoutPanel
+            {
+                FlowDirection = FlowDirection.TopDown,
+                WrapContents = false,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                Location = new Point(0, 36),
+                Margin = new Padding(0),
+                Padding = new Padding(0, 0, 0, 16),
+                BackColor = Color.FromArgb(24, 27, 34),
+            };
+            f.Controls.Add(root);
+
+            Label MkLabel(string t, int top = 4) => new Label { Text = t, AutoSize = true, ForeColor = Color.Gainsboro, Margin = new Padding(16, top, 0, 2) };
+
+            FlowLayoutPanel MkRow()
+            {
+                return new FlowLayoutPanel
+                {
+                    FlowDirection = FlowDirection.LeftToRight,
+                    AutoSize = true,
+                    AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                    WrapContents = false,
+                    Margin = new Padding(16, 2, 16, 2),
+                };
+            }
+
+            void ApplyStyle()
+            {
+                SaveCfg();
+                Layout();
+                Redraw();
+                Present();
+            }
+
+            root.Controls.Add(MkLabel("进度条颜色", 10));
+            var rowAccent = MkRow();
+            foreach (string hex in new[] { "#80A0C0", "#A78BFA", "#6EE7B7", "#F97316", "#F472B6", "#22D3EE" })
+            {
+                var b = MkSwatch(hex);
+                b.Click += (s, e) => { colOK = ColorTranslator.FromHtml(hex); curAccentBtn = b; root.Invalidate(); ApplyStyle(); };
+                rowAccent.Controls.Add(b);
+            }
+            var cust1 = new Button { AutoSize = true, FlatStyle = FlatStyle.Flat, Text = "自定义…", Margin = new Padding(8, 2, 0, 0) };
+            cust1.Click += (s, e) =>
+            {
+                using (var d = new ColorDialog { Color = colOK, FullOpen = true })
+                    if (d.ShowDialog(f) == DialogResult.OK)
+                    {
+                        colOK = d.Color; curAccentBtn = null;
+                        cust1.BackColor = colOK;
+                        cust1.ForeColor = (colOK.R * 0.299 + colOK.G * 0.587 + colOK.B * 0.114) > 140 ? Color.Black : Color.White;
+                        root.Invalidate(); ApplyStyle();
+                    }
+            };
+            rowAccent.Controls.Add(cust1);
+            root.Controls.Add(rowAccent);
+            foreach (Control c in rowAccent.Controls)
+                if (c is Button bb && string.Equals((string)bb.Tag, ColorTranslator.ToHtml(colOK), StringComparison.OrdinalIgnoreCase))
+                    curAccentBtn = bb;
+
+            root.Controls.Add(MkLabel("低电量颜色", 14));
+            var rowLow = MkRow();
+            foreach (string hex in new[] { "#D07072", "#FF8C42", "#EF4444" })
+            {
+                var b = MkSwatch(hex);
+                b.Click += (s, e) => { colLow = ColorTranslator.FromHtml(hex); curLowBtn = b; root.Invalidate(); ApplyStyle(); };
+                rowLow.Controls.Add(b);
+            }
+            var cust2 = new Button { AutoSize = true, FlatStyle = FlatStyle.Flat, Text = "自定义…", Margin = new Padding(8, 2, 0, 0) };
+            cust2.Click += (s, e) =>
+            {
+                using (var d = new ColorDialog { Color = colLow, FullOpen = true })
+                    if (d.ShowDialog(f) == DialogResult.OK)
+                    {
+                        colLow = d.Color; curLowBtn = null;
+                        cust2.BackColor = colLow;
+                        cust2.ForeColor = (colLow.R * 0.299 + colLow.G * 0.587 + colLow.B * 0.114) > 140 ? Color.Black : Color.White;
+                        root.Invalidate(); ApplyStyle();
+                    }
+            };
+            rowLow.Controls.Add(cust2);
+            root.Controls.Add(rowLow);
+            foreach (Control c in rowLow.Controls)
+                if (c is Button bb && string.Equals((string)bb.Tag, ColorTranslator.ToHtml(colLow), StringComparison.OrdinalIgnoreCase))
+                    curLowBtn = bb;
+
+            var rowR = MkRow();
+            rowR.Controls.Add(MkLabel("圆角", 10));
+            var tbR = new TrackBar { Minimum = 0, Maximum = 40, TickFrequency = 5, Value = Math.Max(0, Math.Min(40, radiusCfg)), Size = new Size(265, 46), Margin = new Padding(6, 2, 0, 0) };
+            var lbRv = new Label { Text = radiusCfg.ToString(), AutoSize = true, ForeColor = Color.Gainsboro, Margin = new Padding(10, 14, 0, 0) };
+            tbR.ValueChanged += (s, e) => { radiusCfg = tbR.Value; lbRv.Text = radiusCfg.ToString(); ApplyStyle(); };
+            rowR.Controls.Add(tbR); rowR.Controls.Add(lbRv);
+            root.Controls.Add(rowR);
+
+            var rowB = MkRow();
+            rowB.Controls.Add(MkLabel("背景透明度", 10));
+            var tbB = new TrackBar { Minimum = 0, Maximum = 100, TickFrequency = 10, Value = Math.Max(0, Math.Min(100, bgOpacityAcc)), Size = new Size(265, 46), Margin = new Padding(6, 2, 0, 0) };
+            var lbBv = new Label { Text = bgOpacityAcc + "%", AutoSize = true, ForeColor = Color.Gainsboro, Margin = new Padding(10, 14, 0, 0) };
+            tbB.ValueChanged += (s, e) => { bgOpacityAcc = tbB.Value; lbBv.Text = bgOpacityAcc + "%"; SaveCfg(); Layout(); Redraw(); Present(); };
+            rowB.Controls.Add(tbB); rowB.Controls.Add(lbBv);
+            root.Controls.Add(rowB);
+
+            var rowT = MkRow();
+            rowT.Controls.Add(MkLabel("文字透明度", 10));
+            var tbT = new TrackBar { Minimum = 0, Maximum = 100, TickFrequency = 10, Value = Math.Max(0, Math.Min(100, textOpacityAcc)), Size = new Size(265, 46), Margin = new Padding(6, 2, 0, 0) };
+            var lbTv = new Label { Text = textOpacityAcc + "%", AutoSize = true, ForeColor = Color.Gainsboro, Margin = new Padding(10, 14, 0, 0) };
+            tbT.ValueChanged += (s, e) => { textOpacityAcc = tbT.Value; lbTv.Text = textOpacityAcc + "%"; SaveCfg(); Redraw(); };
+            rowT.Controls.Add(tbT); rowT.Controls.Add(lbTv);
+            root.Controls.Add(rowT);
+
+            f.ClientSize = new Size(500, 36 + root.Height + 16);
+            f.Shown += (s, e) => f.ClientSize = new Size(500, 36 + root.Height + 16); // 布局稳定后再校正
+            f.Show();
+        }
+
+        void UpdateSwatchSel(List<Button> swatches, Color cur, Button customBtn)
+        {
+            string curHex = ColorTranslator.ToHtml(cur);
+            foreach (var b in swatches)
+            {
+                bool sel = string.Equals((string)b.Tag, curHex, StringComparison.OrdinalIgnoreCase);
+                b.FlatAppearance.BorderSize = sel ? 3 : 1;
+                b.FlatAppearance.BorderColor = sel ? Color.White : Color.FromArgb(80, 90, 110);
+            }
+            customBtn.BackColor = cur;
+            customBtn.ForeColor = (cur.R * 0.299 + cur.G * 0.587 + cur.B * 0.114) > 140 ? Color.Black : Color.White;
         }
 
         protected override void OnFormClosing(FormClosingEventArgs e)
@@ -366,7 +635,7 @@ namespace StatusBarCs
             // 高度自适应：标题区 60 + 行数*34 + 底部余量 4
             int rows = Math.Min(Math.Max(items.Count, 1), 4);
             H = (int)Math.Round((60 + rows * 34 + 4) * S);
-            R = (int)Math.Round(BASE_R * S);
+            R = (int)Math.Round(Math.Max(0, radiusCfg) * S);
             M = (int)Math.Round(BASE_M * S);
             CW = W + M * 2;
             CH = H + M * 2;
@@ -384,8 +653,14 @@ namespace StatusBarCs
                     var c = JsonSerializer.Deserialize<Cfg>(File.ReadAllText(cfgPath));
                     if (c != null)
                     {
+                        cfg = c;
                         S = Math.Max(0.7f, Math.Min(1.8f, c.scale));
                         px = c.x; py = c.y;
+                        try { colOK = ColorTranslator.FromHtml(string.IsNullOrEmpty(c.accent) ? "#80A0C0" : c.accent); } catch { }
+                        try { colLow = ColorTranslator.FromHtml(string.IsNullOrEmpty(c.lowColor) ? "#D07072" : c.lowColor); } catch { }
+                        radiusCfg = Math.Max(0, Math.Min(48, c.radius));
+                        bgOpacityAcc = Math.Max(0, Math.Min(100, c.bgOpacity));
+                        textOpacityAcc = Math.Max(0, Math.Min(100, c.textOpacity));
                     }
                 }
             }
@@ -396,7 +671,13 @@ namespace StatusBarCs
         {
             try
             {
-                File.WriteAllText(cfgPath, JsonSerializer.Serialize(new Cfg { scale = S, x = px, y = py }));
+                cfg.scale = S; cfg.x = px; cfg.y = py;
+                cfg.accent = ColorTranslator.ToHtml(colOK);
+                cfg.lowColor = ColorTranslator.ToHtml(colLow);
+                cfg.radius = radiusCfg;
+                cfg.bgOpacity = bgOpacityAcc;
+                cfg.textOpacity = textOpacityAcc;
+                File.WriteAllText(cfgPath, JsonSerializer.Serialize(cfg));
             }
             catch { }
         }
@@ -471,6 +752,23 @@ namespace StatusBarCs
                 var buf = new byte[stride * b.Height];
                 Marshal.Copy(d.Scan0, buf, 0, buf.Length);
                 for (int i = 3; i < buf.Length; i += 4) buf[i] = 255;
+                Marshal.Copy(buf, 0, d.Scan0, buf.Length);
+                b.UnlockBits(d);
+            }
+            catch { }
+        }
+
+        static void MultiplyAlpha(Bitmap b, float f)
+        {
+            if (f >= 0.999f) return;
+            try
+            {
+                var rect = new Rectangle(0, 0, b.Width, b.Height);
+                var d = b.LockBits(rect, ImageLockMode.ReadWrite, PixelFormat.Format32bppArgb);
+                int stride = d.Stride;
+                var buf = new byte[stride * b.Height];
+                Marshal.Copy(d.Scan0, buf, 0, buf.Length);
+                for (int i = 3; i < buf.Length; i += 4) buf[i] = (byte)(buf[i] * f);
                 Marshal.Copy(buf, 0, d.Scan0, buf.Length);
                 b.UnlockBits(d);
             }
@@ -619,6 +917,11 @@ namespace StatusBarCs
                 bigBlur.Dispose();
                 int lum = AvgLum(blurred);
                 int scrim = lum > 150 ? 82 : (lum > 90 ? 40 : 14);
+                float bgA = bgOpacityAcc / 100f;
+                float tA = textOpacityAcc / 100f;
+
+                // 背景层：毛玻璃纹理 + 暗化蒙版，整体乘背景透明度
+                MultiplyAlpha(blurred, bgA);
 
                 // 纹理笔刷填充圆角路径：无裁剪接缝
                 using (var panel = RoundRect(new RectangleF(M, M, W, H), R))
@@ -629,7 +932,7 @@ namespace StatusBarCs
                         g.FillPath(tb, panel);
                     }
                     if (scrim > 0)
-                        using (var b = new SolidBrush(Color.FromArgb(scrim, 20, 22, 28)))
+                        using (var b = new SolidBrush(Color.FromArgb((int)(scrim * bgA), 20, 22, 28)))
                             g.FillPath(b, panel);
                 }
                 blurred.Dispose();
@@ -638,11 +941,11 @@ namespace StatusBarCs
                 using (var fName = new Font("Microsoft YaHei UI", 17 * S, FontStyle.Regular, GraphicsUnit.Pixel))
                 using (var fPct = new Font("Microsoft YaHei UI", 17 * S, FontStyle.Bold, GraphicsUnit.Pixel))
                 using (var fCap = new Font("Microsoft YaHei UI", 13 * S, FontStyle.Regular, GraphicsUnit.Pixel))
-                using (var brText = new SolidBrush(COL_TEXT))
-                using (var brSub = new SolidBrush(COL_SUB))
+                using (var brText = new SolidBrush(Color.FromArgb((int)(245 * tA), 242, 243, 246)))
+                using (var brSub = new SolidBrush(Color.FromArgb((int)(120 * tA), 240, 242, 246)))
                 {
                     // 标题条
-                    using (var b = new SolidBrush(COL_OK))
+                    using (var b = new SolidBrush(Color.FromArgb((int)(255 * tA), colOK)))
                         g.FillRectangle(b, M + Sx(22), M + Sx(22), Math.Max(2, Sx(3)), Sx(20));
                     g.DrawString("状态条", fTitle, brText, M + Sx(34), M + Sx(19));
 
@@ -664,23 +967,25 @@ namespace StatusBarCs
                     foreach (var it in sorted)
                     {
                         bool low = it.Pct.HasValue && it.Pct.Value < 30;
-                        Color col = low ? COL_LOW : COL_OK;
+                        Color col = low ? colLow : colOK;
                         var nameRect = new RectangleF(M + Sx(22), y - Sx(2), nameColW, Sx(24));
                         g.DrawString(it.Name, fName, brText, nameRect, sfName);
 
                         float bx = bx0, bw = bw0, bh = Math.Max(5, Sx(9));
                         float by = y + Sx(8);
                         using (var p = RoundRect(new RectangleF(bx, by, bw, bh), bh / 2))
-                        using (var b = new SolidBrush(COL_TRACK))
+                        using (var b = new SolidBrush(Color.FromArgb((int)(44 * tA), 255, 255, 255))) // 轨道属前景，跟文字透明度
                             g.FillPath(b, p);
                         if (it.Pct.HasValue && it.Pct.Value > 0)
                         {
                             float fw = Math.Max(bh, bw * it.Pct.Value / 100f);
                             using (var p = RoundRect(new RectangleF(bx, by, fw, bh), bh / 2))
-                            using (var b = new SolidBrush(col))
+                            using (var b = new SolidBrush(Color.FromArgb((int)(255 * tA), col)))
                                 g.FillPath(b, p);
                         }
-                        using (var b = new SolidBrush(it.Pct.HasValue ? col : COL_SUB))
+                        using (var b = new SolidBrush(it.Pct.HasValue
+                            ? Color.FromArgb((int)(255 * tA), col)
+                            : Color.FromArgb((int)(120 * tA), 240, 242, 246)))
                         {
                             string txt = it.Pct.HasValue ? it.Pct.Value + "%" : "—";
                             g.DrawString(txt, fPct, b,
@@ -1000,6 +1305,7 @@ namespace StatusBarCs
                 try { System.Diagnostics.Process.Start("notepad.exe", Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "debug.log")); }
                 catch { }
             });
+            menu.Items.Add("设置", null, (s, e) => ShowSettings());
             miAutoHide = new ToolStripMenuItem("有窗口时自动隐藏", null, (s, e) =>
             {
                 autoHide = !autoHide;
@@ -1011,6 +1317,14 @@ namespace StatusBarCs
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("开机自启", null, (s, e) => InstallAutostart());
             menu.Items.Add("退出", null, (s, e) => Close());
+            // 深色菜单风格
+            menu.Renderer = new ToolStripProfessionalRenderer(new DarkMenuColors());
+            menu.BackColor = Color.FromArgb(24, 27, 34);
+            menu.ForeColor = Color.Gainsboro;
+            menu.ShowImageMargin = false;
+            foreach (ToolStripItem it in menu.Items)
+                if (it is ToolStripMenuItem mi) mi.ForeColor = Color.Gainsboro;
+
             tray.ContextMenuStrip = menu;
             tray.DoubleClick += (s, e) => ToggleHide();
             tray.Visible = true;
@@ -1081,7 +1395,17 @@ namespace StatusBarCs
             // 单实例锁：开机自启 + 系统重启应用恢复叠加时，第二个实例静默退出
             bool createdNew;
             singleInstance = new Mutex(true, @"Local\StatusBarCs.SingleInstance", out createdNew);
-            if (!createdNew) return;
+            if (!createdNew)
+            {
+                // 已有实例：通知它打开设置窗口，然后退出
+                try
+                {
+                    using (var ev = EventWaitHandle.OpenExisting(@"Local\StatusBarCs.ShowSettings"))
+                        ev.Set();
+                }
+                catch { }
+                return;
+            }
 
             try { SetProcessDpiAwareness(2); } catch { try { Nat.SetProcessDPIAware(); } catch { } }
             Application.EnableVisualStyles();
