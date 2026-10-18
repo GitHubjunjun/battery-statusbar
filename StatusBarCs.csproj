@@ -13,9 +13,9 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <DebugType>none</DebugType>
     <SatelliteResourceLanguages>zh-Hans</SatelliteResourceLanguages>
-    <Version>1.2.0</Version>
-    <FileVersion>1.2.0</FileVersion>
-    <AssemblyVersion>1.2.0</AssemblyVersion>
+    <Version>1.2.1</Version>
+    <FileVersion>1.2.1</FileVersion>
+    <AssemblyVersion>1.2.1</AssemblyVersion>
   </PropertyGroup>
 
 </Project>
