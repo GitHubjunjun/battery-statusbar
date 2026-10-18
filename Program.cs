@@ -60,6 +60,11 @@ namespace StatusBarCs
         public static extern bool IsWindowVisible(IntPtr h);
         [DllImport("user32.dll")]
         public static extern bool ShowWindow(IntPtr h, int cmd);
+        [DllImport("user32.dll")]
+        public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
+        public static readonly IntPtr HWND_BOTTOM = new IntPtr(1);
+        public static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
+        public const uint SWP_NOMOVE = 0x2, SWP_NOSIZE = 0x1, SWP_NOACTIVATE = 0x10;
 
         [DllImport("psapi.dll")]
         public static extern bool EmptyWorkingSet(IntPtr h);
@@ -250,6 +255,7 @@ namespace StatusBarCs
         NotifyIcon tray;
         ToolStripMenuItem miAutoHide;
         System.Windows.Forms.Timer timer;
+        System.Windows.Forms.Timer pinTimer;
         readonly string cfgPath, lastPath;
         LastCfg last = new LastCfg();
 
@@ -299,6 +305,10 @@ namespace StatusBarCs
             MouseDown += OnDown;
             MouseMove += OnMove;
             MouseUp += OnUp;
+
+            pinTimer = new System.Windows.Forms.Timer();
+            pinTimer.Interval = 3000;
+            pinTimer.Tick += (s2, e2) => { pinTimer.Stop(); ToBottom(); };
         }
 
         protected override CreateParams CreateParams
@@ -306,7 +316,7 @@ namespace StatusBarCs
             get
             {
                 var cp = base.CreateParams;
-                cp.ExStyle |= Nat.WS_EX_LAYERED | Nat.WS_EX_TOOLWINDOW;
+                cp.ExStyle |= Nat.WS_EX_LAYERED | Nat.WS_EX_TOOLWINDOW | 0x08000000; // WS_EX_NOACTIVATE
                 return cp;
             }
         }
@@ -325,6 +335,20 @@ namespace StatusBarCs
                 WindowState = FormWindowState.Normal;
                 Present();
             }
+        }
+
+        void ToBottom()
+        {
+            Nat.SetWindowPos(Handle, Nat.HWND_BOTTOM, 0, 0, 0, 0,
+                Nat.SWP_NOMOVE | Nat.SWP_NOSIZE | Nat.SWP_NOACTIVATE);
+        }
+
+        void PinTop() // 点击状态条：临时置顶 3s，方便查看/拖动，随后自动回到底层
+        {
+            Nat.SetWindowPos(Handle, Nat.HWND_TOPMOST, 0, 0, 0, 0,
+                Nat.SWP_NOMOVE | Nat.SWP_NOSIZE | Nat.SWP_NOACTIVATE);
+            pinTimer.Stop();
+            pinTimer.Start();
         }
 
         protected override void OnFormClosing(FormClosingEventArgs e)
@@ -747,22 +771,26 @@ namespace StatusBarCs
 
         static int? ReadK87(List<string> paths)
         {
+            bool matched = false;
             foreach (var p in paths)
             {
                 string lp = p.ToLowerInvariant();
                 if (!lp.Contains("vid_3837") || !lp.Contains("pid_3033")) continue;
+                matched = true;
                 IntPtr h = Nat.Open(p);
-                if (h == IntPtr.Zero) continue;
+                if (h == IntPtr.Zero) { Log.W("k87 open fail: " + p.Substring(Math.Max(0, p.Length - 50))); continue; }
                 try
                 {
                     while (Nat.Read(h, 15) != null) { }
-                    if (!Nat.Write(h, K87_PKT)) continue;
+                    if (!Nat.Write(h, K87_PKT)) { Log.W("k87 write fail"); continue; }
                     var d = Nat.Read(h, 400);
                     if (d != null && d.Length > 41 && d[1] == 0xAA && d[2] == 0x05)
                     {
                         int v = d[41];
                         if (v > 0 && v <= 100) return v;
+                        Log.W("k87 bad range: " + v);
                     }
+                    else Log.W("k87 bad resp len=" + (d?.Length ?? -1));
                 }
                 finally { Nat.CloseHandle(h); }
             }
@@ -781,7 +809,12 @@ namespace StatusBarCs
                 if (pw == null && lp.Contains("col05")) pw = p;
                 if (pr == null && lp.Contains("col09")) pr = p;
             }
-            if (pw == null || pr == null) return null;
+            if (pw == null || pr == null)
+            {
+                if (paths.Any(p => p.ToLowerInvariant().Contains("vid_24ae") && p.ToLowerInvariant().Contains("pid_1417")))
+                    Log.W("rapoo cols missing: write=" + (pw != null) + " read=" + (pr != null));
+                return null;
+            }
             IntPtr hw = Nat.Open(pw), hr = Nat.Open(pr);
             if (hw == IntPtr.Zero || hr == IntPtr.Zero)
             {
@@ -826,9 +859,9 @@ namespace StatusBarCs
             items = new List<Item>
             {
                 new Item { Name = "笔记本", Pct = last.lap },
-                new Item { Name = "键盘 K87S", Pct = last.k87 },
-                new Item { Name = "鼠标 VT3 MAX", Pct = last.rapoo },
             };
+            if (last.k87.HasValue) items.Add(new Item { Name = "键盘 K87S", Pct = last.k87 });
+            if (last.rapoo.HasValue) items.Add(new Item { Name = "鼠标 VT3 MAX", Pct = last.rapoo });
             Redraw();
         }
 
@@ -865,9 +898,10 @@ namespace StatusBarCs
                             var list = new List<Item>
                             {
                                 new Item { Name = "笔记本", Pct = last.lap },
-                                new Item { Name = "键盘 K87S", Pct = last.k87 },
-                                new Item { Name = "鼠标 VT3 MAX", Pct = last.rapoo },
                             };
+                            // 外设无历史读数（从未读到）时不显示该行，避免出现"—"
+                            if (last.k87.HasValue) list.Add(new Item { Name = "键盘 K87S", Pct = last.k87 });
+                            if (last.rapoo.HasValue) list.Add(new Item { Name = "鼠标 VT3 MAX", Pct = last.rapoo });
                             if (btList != null) list.AddRange(btList);
                             items = list;
                             Layout(); // 设备数变化 → 高度自适应
@@ -900,6 +934,7 @@ namespace StatusBarCs
                 dragOn = true;
                 dragPx0 = px; dragPy0 = py;
                 dragCursor = Cursor.Position;
+                PinTop(); // 点击状态条：临时置顶 3s
             }
             Capture = true;
         }
@@ -1031,6 +1066,7 @@ namespace StatusBarCs
             base.OnShown(e);
             Log.W($"OnShown visible={Visible} bounds={Bounds}");
             Redraw();
+            ToBottom(); // 常态压在桌面层之上、其他窗口之下
             guard.Start();
         }
     }
