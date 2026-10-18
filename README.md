@@ -6,7 +6,7 @@
 
 # Battery Statusbar · 桌面电量状态条
 
-Windows 桌面悬浮电量条，毛玻璃圆角 + 低饱和配色，C# / WinForms（.NET 8）单进程实现，目标：**特别轻量**——框架依赖单文件约 180KB，空闲时 CPU 占用近乎为 0，内存经 `EmptyWorkingSet` 定期裁剪。
+Windows 桌面悬浮电量条，毛玻璃圆角 + 低饱和配色，C# / WinForms（.NET 8）单进程实现，目标：**特别轻量**——安装包 24MB（大头是 WinRT 投影层，运行时真正占用很小），空闲时 CPU 占用近乎为 0，内存经 `EmptyWorkingSet` 定期裁剪。
 
 ![screenshot](docs/screenshot.png?v=3)
 
@@ -136,7 +136,7 @@ A：三步排查——① 确认耳机已连接（断开的设备不显示）；
 A：不能。Windows 标准接口（HFP/GATT）只提供汇总电量，充电仓/单耳电量是厂商私有协议（华为电脑管家走的是私有通道）。除非逆向厂商协议，否则无法实现。
 
 **Q：常驻占用多少资源？**
-A：框架依赖单文件约 180KB；空闲 CPU ≈ 0（刷新间隔最短 1 分钟，且每次刷新后裁剪工作集）；内存工作集经 `EmptyWorkingSet` 裁剪后维持在数 MB 量级。
+A：安装包 24.4MB（大头是 WinRT 投影层 `Microsoft.Windows.SDK.NET.dll`）；空闲 CPU ≈ 0（刷新间隔最短 1 分钟，且每次刷新后裁剪工作集）；内存工作集经 `EmptyWorkingSet` 裁剪后维持在数 MB 量级。
 
 **Q：和 Wallpaper Engine 之类的壁纸软件冲突吗？**
 A：不冲突。背景取自系统壁纸渲染结果（Progman 桌面画面），换壁纸后 60 秒内自动跟随更新。
