@@ -99,6 +99,43 @@ Probably the trickiest part of building a desktop battery display — and the mo
 
 **What this project does**: for the MCHOSE K87S and Rapoo VT3 MAX, it reverse-engineers the vendor software / web-driver HID protocols and implements them natively — including pitfalls like unnumbered 64-byte reports and Windows `WriteFile` requiring 65 bytes (first byte as the Report ID placeholder) — so 2.4G devices appear on the same bar as laptops and Bluetooth devices, with zero vendor software required.
 
+### Reverse-engineering details: MCHOSE K87S (VID 3837 / PID 3033)
+
+Protocols below were obtained by packet capture, for reference only; firmware updates may change field offsets.
+
+- **Channel**: HID Feature report (65 bytes, report ID 0). Among the 6 collections enumerated via SetupAPI, the battery query lives on the vendor collection
+- **Request**:
+
+  ```
+  00 55 05 00 78 38 40 00 00 00 ... (65 bytes total, zero-padded)
+  │  │  │  │  └─ 0x78 0x38 0x40 = "query battery" command body
+  │  │  └─ 0x05 = sub-command (battery)
+  │  └─ 0x55 = frame header
+  └─ Report ID 0 (Feature)
+  ```
+
+- **Response**: read from the same handle; `buf[1]==0xAA && buf[2]==0x05` marks a battery reply, **keyboard battery at `buf[41]`** (single byte, 0-100)
+- **Pitfalls**: drain the input buffer (loop-read queued key packets) before writing, otherwise the response frame is misaligned; `WriteFile` must be exactly 65 bytes or the firmware silently ignores it
+
+### Reverse-engineering details: Rapoo VT3 MAX (VID 24AE / PID 1417)
+
+- **Channel**: two HID collections on the vendor page (0xFF00) — **col05 is write-only (commands), col09 is read-only (events)**; open separate handles
+- **Command** (33B = Report ID 6 + 32B payload):
+
+  | Byte | Meaning |
+  |---|---|
+  | [0] | Sequence number, cycles 0-255 (firmware deduplicates by it) |
+  | [1] | 0x02 command class |
+  | [3] | 0xAA, [4] = 0x01 → "query battery" |
+  | [5] | Checksum = (sum of first 5 bytes + 6) & 0xFF |
+
+- **Response**: input reports on col09, `buf[0]==0x07`, **mouse battery at `buf[8]`**; poll for 700ms after sending, retry up to 3 times
+- **Pitfalls**: the sequence number must **increment every packet** (duplicates are dropped); commands go through col05 and responses come on col09 — using a single collection for both yields nothing
+
+### Huawei FreeBuds: no reverse engineering needed
+
+Bluetooth headset battery is a completely different story — Win10 1809+ keeps HFP battery data at the PnP layer (same source as the Settings page), readable via `CM_Get_DevNode_PropertyW`, with GATT Battery Service as fallback. Only the **case / per-bud split levels** require the vendor's private protocol (Huawei PC Manager's channel has been reverse-engineered by the open-source project [OpenFreebuds](https://github.com/melianmiko/OpenFreebuds)); not covered by this project.
+
 Other 2.4G models need their own protocol implemented in `Program.cs` (`ReadK87` / `ReadRapoo`). PRs welcome.
 
 ## Configuration files
