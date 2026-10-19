@@ -60,6 +60,8 @@ namespace StatusBarCs
 
     public static List<Item> Scan()
         {
+            // 不显示的设备（手机/平板等无电量数据、无监控价值的）
+            string[] hidden = { "nova", "MatePad" };
             var res = new List<Item>();
             string[] props = { PROP_BATTERY, "System.Devices.BatteryPlusCharging", "System.Devices.Aep.IsConnected" };
             try
@@ -86,6 +88,7 @@ namespace StatusBarCs
                             }
                             if (pct == null && !connected) continue;
                             string nm = string.IsNullOrWhiteSpace(d.Name) ? "蓝牙设备" : d.Name;
+                            if (hidden.Any(h => nm.IndexOf(h, StringComparison.OrdinalIgnoreCase) >= 0)) continue; // 黑名单
                             if ((pct.HasValue || connected) && !res.Any(x => x.Name == nm))
                                 res.Add(new Item { Name = nm, Pct = pct });
                         }
